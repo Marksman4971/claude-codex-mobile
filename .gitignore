@@ -1,0 +1,24 @@
+# Local config (filled with real credentials, never commit)
+config.ps1
+
+# Runtime / generated files
+hooks/ntfy-slots.json
+hooks/ntfy-target.json
+hooks/*.log
+hooks/*.txt
+hooks/.session-*.json
+codex-hooks/*.log
+codex-hooks/*.out.txt
+
+# Backup files
+*.bak
+*.bak-*
+*.tmp
+
+# UIA library (will be downloaded by install script; not redistributed in repo)
+hooks/lib/UIA.ahk
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini

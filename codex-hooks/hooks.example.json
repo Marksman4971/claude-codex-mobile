@@ -1,0 +1,37 @@
+﻿{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\$env:USERNAME\\.codex\\hooks\\sync-claude-skills.ps1\"",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\$env:USERNAME\\.codex\\hooks\\startup-health-check.ps1\"",
+            "timeout": 15,
+            "statusMessage": "Checking Codex startup health..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\$env:USERNAME\\.codex\\hooks\\ntfy-stop.ps1\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\$env:USERNAME\\.codex\\hooks\\play-stop-tone.ps1\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

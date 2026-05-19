@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "comment": "ntfy topic pool registry. Each slot = one cc/Codex terminal binding. Edit manually only when both listener and AHK injector are stopped.",
+  "marker_prefix": "⌬⌬NTFY-",
+  "marker_suffix": "⌬⌬",
+  "slots": {
+    "slot-1": { "topic": "${NTFY_TOPIC_PREFIX}-1", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-2": { "topic": "${NTFY_TOPIC_PREFIX}-2", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-3": { "topic": "${NTFY_TOPIC_PREFIX}-3", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-4": { "topic": "${NTFY_TOPIC_PREFIX}-4", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-5": { "topic": "${NTFY_TOPIC_PREFIX}-5", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-6": { "topic": "${NTFY_TOPIC_PREFIX}-6", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-7": { "topic": "${NTFY_TOPIC_PREFIX}-7", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-8": { "topic": "${NTFY_TOPIC_PREFIX}-8", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null },
+    "slot-9": { "topic": "${NTFY_TOPIC_PREFIX}-9", "hwnd": null, "pid": null, "session_id": null, "claimed_at": null, "label": null }
+  }
+}
