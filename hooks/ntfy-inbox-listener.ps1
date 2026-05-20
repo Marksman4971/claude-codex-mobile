@@ -19,7 +19,7 @@ $OutputEncoding           = [System.Text.Encoding]::UTF8
 # When a message arrives on slot-N, listener wraps clipboard with marker carrying slot id,
 # so AHK injector can route to the correct cc window.
 $SlotsFile    = "$env:USERPROFILE\.claude\hooks\ntfy-slots.json"
-$Topic        = '${NTFY_LEGACY_TOPIC},${NTFY_TOPIC_PREFIX}-1,${NTFY_TOPIC_PREFIX}-2,${NTFY_TOPIC_PREFIX}-3,${NTFY_TOPIC_PREFIX}-4,${NTFY_TOPIC_PREFIX}-5,${NTFY_TOPIC_PREFIX}-6,${NTFY_TOPIC_PREFIX}-7,${NTFY_TOPIC_PREFIX}-8,${NTFY_TOPIC_PREFIX}-9'
+$Topic        = '${NTFY_LEGACY_TOPIC},${NTFY_TOPIC_PREFIX}-1,${NTFY_TOPIC_PREFIX}-2,${NTFY_TOPIC_PREFIX}-3,${NTFY_TOPIC_PREFIX}-4,${NTFY_TOPIC_PREFIX}-5,${NTFY_TOPIC_PREFIX}-6,${NTFY_TOPIC_PREFIX}-7,${NTFY_TOPIC_PREFIX}-8,${NTFY_TOPIC_PREFIX}-9,${NTFY_TOPIC_PREFIX}-10,${NTFY_TOPIC_PREFIX}-11,${NTFY_TOPIC_PREFIX}-12,${NTFY_TOPIC_PREFIX}-13,${NTFY_TOPIC_PREFIX}-14,${NTFY_TOPIC_PREFIX}-15,${NTFY_TOPIC_PREFIX}-16,${NTFY_TOPIC_PREFIX}-17,${NTFY_TOPIC_PREFIX}-18,${NTFY_TOPIC_PREFIX}-19,${NTFY_TOPIC_PREFIX}-20'
 $OutboxTopic  = '${NTFY_LEGACY_TOPIC}'   # legacy / Claude completion pushes / default ingest
 $DefaultSlot  = 'slot-1'  # messages on $OutboxTopic (no slot info) route to this default slot
 $Server       = '${NTFY_SERVER_URL}'

@@ -43,7 +43,7 @@ This project does. The trade-off: **Windows only**, requires you to host your ow
                                                               └──────────────────┘
 ```
 
-**Core abstraction**: a **slot pool** (9 virtual channels `<PREFIX>-1` to `<PREFIX>-9`). Each terminal window claims a free slot on launch (via SessionStart hook). Phone messages on `<PREFIX>-N` route to whichever window owns slot-N.
+**Core abstraction**: a **slot pool** (20 virtual channels `<PREFIX>-1` to `<PREFIX>-20`). Each terminal window claims a free slot on launch (via SessionStart hook). Phone messages on `<PREFIX>-N` route to whichever window owns slot-N. The pool size is a defended constant — extending past 20 means editing the slot array in 6 files (`ntfy-slot-claim.ps1`, `ntfy-slot-release.ps1`, `ntfy-stop.ps1` × 2, `codex-slot-claim-current.ps1`, `codex-slot-release-current.ps1`) plus the listener's topic subscription string and the `ntfy-slots.template.json` schema; 20 is the practical ceiling for one user's API quota and screen real estate.
 
 ## Requirements
 
@@ -138,6 +138,21 @@ In Codex Desktop:
 PASS 5 in `codex-hooks/codex-slot-claim-current.ps1` auto-claims slots for any orphan visible Codex window, so once a thread has its own window the binding happens at next hook fire with no manual step.
 
 **This pattern generalises**: if a future Anthropic / Google / etc. AI Desktop GUI adopts the same "many threads in one Electron window" model, the same fix applies — find an "Open in new window" command and bind a shortcut. If a host doesn't expose that command, only the CLI variant routes cleanly.
+
+### Critical operational rule: open Codex windows ONE AT A TIME
+
+Empirically (2026-05-20 testing): pressing the "Open in new window" shortcut **multiple times in quick succession** does NOT reliably split threads into distinct BrowserWindows. Codex's SessionStart hook fires for each new window, but `GetForegroundWindow` doesn't have time to settle on the newly-created window before the next hook fires — multiple threads collapse to the original window's HWND.
+
+**Correct procedure**:
+
+1. Select thread #1 in Codex sidebar → press your "Open in new window" shortcut → wait ~1 second for the new window to fully open AND become foreground
+2. Verify slot-claim wrote a new slot entry (optional: tail `~/.codex/hooks/codex-slot-claim-current.log`)
+3. THEN move to thread #2 → repeat
+4. Continue until all desired threads are in their own windows
+
+Doing 5 threads sequentially with ~1s pauses produces 5 distinct slot bindings. Doing them simultaneously with rapid key presses produces 1 slot binding and 4 silent orphan windows.
+
+Also note: **Codex Desktop does NOT persist thread→window mapping across app restart**. On cold start it may pack multiple threads back into one window. You'll have to re-split after every Codex restart.
 
 ## Recent improvements (2026-05-20, v7.x line)
 

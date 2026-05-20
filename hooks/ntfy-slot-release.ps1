@@ -1,4 +1,4 @@
-# ntfy slot release — free up the slot a cc session was using.
+﻿# ntfy slot release — free up the slot a cc session was using.
 # Works as:
 #   1) SessionEnd hook (cc auto-releases on exit), OR
 #   2) Manual invocation (e.g. cc crashed, slot leaked, free it).
@@ -35,7 +35,7 @@ if ($FromHook) {
 $reg = Get-Content -Raw -Encoding UTF8 $slotsFile | ConvertFrom-Json
 $released = @()
 
-foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9') {
+foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9','slot-10','slot-11','slot-12','slot-13','slot-14','slot-15','slot-16','slot-17','slot-18','slot-19','slot-20') {
     $slot = $reg.slots.$name
     if (-not $slot.hwnd) { continue }
 

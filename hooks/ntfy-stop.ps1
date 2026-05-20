@@ -115,7 +115,7 @@ if ($sessionId) {
             $bytes = [System.IO.File]::ReadAllBytes($slotsFile)
             if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF) { $bytes = $bytes[3..($bytes.Length-1)] }
             $reg = [System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
-            foreach ($n in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9') {
+            foreach ($n in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9','slot-10','slot-11','slot-12','slot-13','slot-14','slot-15','slot-16','slot-17','slot-18','slot-19','slot-20') {
                 if ($reg.slots.$n.session_id -eq $sessionId) {
                     $targetTopic = $reg.slots.$n.topic
                     Log "matched session to $n -> $targetTopic"

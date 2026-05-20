@@ -1,4 +1,4 @@
-# ntfy slot claim — bind current cc terminal to a free ntfy topic slot.
+﻿# ntfy slot claim — bind current cc terminal to a free ntfy topic slot.
 # Usage:
 #   .\ntfy-slot-claim.ps1                 # manual mode, no stdin read
 #   .\ntfy-slot-claim.ps1 -FromHook       # SessionStart hook mode, reads stdin payload
@@ -103,7 +103,7 @@ function Test-LiveHwnd($h) {
 # Load slots registry
 $reg = Get-Content -Raw -Encoding UTF8 $slotsFile | ConvertFrom-Json
 $claimed = $null
-$slotOrder = 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9'
+$slotOrder = 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9','slot-10','slot-11','slot-12','slot-13','slot-14','slot-15','slot-16','slot-17','slot-18','slot-19','slot-20'
 
 # PASS 1: this exact HWND already in some slot → just refresh session_id + title (no rebinding)
 foreach ($name in $slotOrder) {
@@ -168,7 +168,7 @@ if (-not $claimed) {
 }
 
 if (-not $claimed) {
-    Log "no free or orphan slot (all 9 occupied with live windows)"
+    Log "no free or orphan slot (all 20 occupied with live windows)"
     Write-Host "[FAIL] all 9 slots occupied with live windows; release one via ntfy-slot-release.ps1" -ForegroundColor Yellow
     exit 2
 }

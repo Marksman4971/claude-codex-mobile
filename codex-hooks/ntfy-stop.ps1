@@ -132,7 +132,7 @@ function Resolve-Topic {
     try {
         if (Test-Path -LiteralPath $slotsFile) {
             $reg = Get-Content -LiteralPath $slotsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($name in "slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9") {
+            foreach ($name in "slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9","slot-10","slot-11","slot-12","slot-13","slot-14","slot-15","slot-16","slot-17","slot-18","slot-19","slot-20") {
                 $slotProp = $reg.slots.PSObject.Properties[$name]
                 if (-not $slotProp) { continue }
 
@@ -159,7 +159,7 @@ function Resolve-WindowName {
     try {
         if (-not (Test-Path -LiteralPath $slotsFile)) { return $null }
         $reg = Get-Content -LiteralPath $slotsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($name in "slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9") {
+        foreach ($name in "slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9","slot-10","slot-11","slot-12","slot-13","slot-14","slot-15","slot-16","slot-17","slot-18","slot-19","slot-20") {
             $slotProp = $reg.slots.PSObject.Properties[$name]
             if (-not $slotProp) { continue }
             $slot = $slotProp.Value

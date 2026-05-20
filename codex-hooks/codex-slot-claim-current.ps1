@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$FromHook,
     [switch]$Newest,
     [string]$ThreadId,
@@ -110,7 +110,7 @@ public class CodexWin {
             $now = Get-Date
             $bestSlot = $null
             $bestTime = [datetime]::MinValue
-            foreach ($n in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9') {
+            foreach ($n in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9','slot-10','slot-11','slot-12','slot-13','slot-14','slot-15','slot-16','slot-17','slot-18','slot-19','slot-20') {
                 $sp = $reg2.slots.PSObject.Properties[$n]
                 if (-not $sp) { continue }
                 $s = $sp.Value
@@ -227,7 +227,7 @@ if (-not (Test-Path -LiteralPath $slotsFile)) {
 }
 
 $reg = Get-Content -LiteralPath $slotsFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$slotNames = @("slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9")
+$slotNames = @("slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9","slot-10","slot-11","slot-12","slot-13","slot-14","slot-15","slot-16","slot-17","slot-18","slot-19","slot-20")
 
 foreach ($name in $slotNames) {
     $slotObj = $reg.slots.$name
