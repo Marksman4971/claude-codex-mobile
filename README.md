@@ -131,6 +131,31 @@ For Codex Desktop: SessionStart hook fires unreliably; after opening a new Codex
 - Codex Desktop multi-window requires manual slot claim per window (no auto-fire SessionStart).
 - Listener restart-on-crash works, but if the ntfy server itself goes down, you need to restart it.
 
+## Tooling (optional)
+
+The `scripts/` directory adds an automation + diagnostics layer on top of the manual deployment described in Quick start. Use it if you want one-command deploy + ongoing health checks instead of editing `settings.json` and managing the listener by hand.
+
+```powershell
+scripts/setup.ps1 all       # Read config.ps1 → substitute ${NAME} placeholders → deploy to ~/.claude/hooks/
+                            #   + register Claude/Codex hooks + create Startup shortcuts
+scripts/doctor.ps1          # 13-check PASS/WARN/FAIL report (server / listener / AHK / slot table / hooks)
+scripts/fix.ps1             # Auto-fix FAIL items found by doctor (dead slots, stuck AHK, missing watchdog, ...)
+scripts/restart-ahk.ps1     # Restart the AHK injector (most common single-command fix)
+scripts/daily-check.ps1     # Lightweight doctor (~3s) — register as SessionStart hook for daily self-check
+```
+
+If you ran the manual Quick start above, `scripts/doctor.ps1` already works against the deployed `~/.claude/hooks/` — no extra config needed. The `setup.ps1 all` workflow is an alternative to the manual hook editing in steps 4-7 of Quick start.
+
+Detailed docs:
+
+| Doc | Content |
+|-----|---------|
+| `SKILL.md` | Entry point for Claude Code users who install this as a skill |
+| `references/architecture.md` | Full link diagram + design decisions (why slot pool / why clipboard marker / why HWND fallback) |
+| `references/known-issues.md` | 16 failure modes with detection + fix recipes |
+| `references/adapters.md` | Per-integration config (Claude hooks / Codex hooks / Startup / Auth) |
+| `references/setup.md` | Expanded walkthrough mirroring Quick start with every flag |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

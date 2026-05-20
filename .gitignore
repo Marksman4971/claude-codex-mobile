@@ -10,6 +10,10 @@ hooks/.session-*.json
 codex-hooks/*.log
 codex-hooks/*.out.txt
 
+# Tooling runtime state
+scripts/ntfy-doctor-last-run.txt
+~/.claude/hooks/ntfy-doctor-last-run.txt
+
 # Backup files
 *.bak
 *.bak-*
