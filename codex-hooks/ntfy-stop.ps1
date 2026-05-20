@@ -78,22 +78,33 @@ function ConvertTo-PlainText {
     $clean = $clean -replace '~~([^~]+)~~', '$1'
     $clean = $clean -replace '(?m)^[-*_]{3,}\s*$', ''
 
-    # Phone-friendly layout rewrite (2026-05-19):
+    # Phone-friendly layout rewrite (2026-05-19, table-unfold 2026-05-20):
     # 1. Convert unordered bullets (- / * / +) to numbered list (1. 2. 3.)
-    # 2. Tables: drop separator row (|---|---|), trim outer pipes, normalize inner pipes
-    # 3. Collapse 3+ consecutive blank lines to a single blank line
+    # 2. Tables → paragraphs:
+    #    - separator row (|---|---|) drops AND removes the header row before it
+    #    - 2-col row → 'key: value'
+    #    - 3+ col row → 'c1 · c2 · c3'  (middle dot, visually lighter than '|')
+    # 3. Collapse 3+ consecutive blank lines to one
     $rawLines = $clean -split "`n"
     $tmpLines = New-Object System.Collections.ArrayList
     $bulletCounter = 0
     foreach ($ln in $rawLines) {
         $stripped = $ln -replace '\r$', ''
-        # Table separator row → drop
-        if ($stripped.Trim() -match '^\|[\s\-:|]+\|$') { continue }
-        # Table data row → trim outer pipes + normalize inner
-        if ($stripped.Trim() -match '^\|.*\|$') {
-            $cells = $stripped.Trim() -replace '^\|\s*', '' -replace '\s*\|$', ''
-            $cells = $cells -replace '\s*\|\s*', ' | '
-            [void]$tmpLines.Add($cells)
+        # Table separator row → drop, AND remove the header line just added before it
+        if ($stripped.Trim() -match '^\|[\s\-:|]+\|$') {
+            if ($tmpLines.Count -gt 0) { $tmpLines.RemoveAt($tmpLines.Count - 1) }
+            continue
+        }
+        # Table data row → split cells, format by column count
+        if ($stripped.Trim() -match '^\|(.*)\|$') {
+            $cells = ($Matches[1] -split '\s*\|\s*') | ForEach-Object { $_.Trim() }
+            if ($cells.Count -eq 2) {
+                [void]$tmpLines.Add("$($cells[0]): $($cells[1])")
+            } elseif ($cells.Count -ge 3) {
+                [void]$tmpLines.Add(($cells -join ' · '))
+            } elseif ($cells.Count -eq 1 -and $cells[0]) {
+                [void]$tmpLines.Add($cells[0])
+            }
             continue
         }
         # Unordered bullet → numbered
