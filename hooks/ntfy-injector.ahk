@@ -22,6 +22,7 @@ global SLOTS_FILE := A_AppData "\..\..\.claude\hooks\ntfy-slots.json"
 global LOG_FILE := A_AppData "\..\..\.claude\hooks\ntfy-injector.log"
 global ALERT_HELPER := A_AppData "\..\..\.claude\hooks\ntfy-alert.ps1"
 global MARK_INJECT_HELPER := A_AppData "\..\..\.claude\hooks\ntfy-mark-inject.ps1"
+global LISTENER_SCRIPT := A_AppData "\..\..\.claude\hooks\run-ntfy-listener.ps1"
 global Processing := false
 global LastText := ""
 global LastTick := 0
@@ -462,6 +463,42 @@ ClipChanged(DataType) {
     ShowToast("Inject FAILED", "no target for [" slotId "]; check phone for recovery instructions")
 }
 
-Log("ntfy-injector v7.8 started (Tier3b + idle-gate + last_inject_at marker for Stop-hook routing)")
-TrayTip("v7.8: inject-marker", "ntfy-injector v7.8", 17)
+; ============================================================
+; Listener watchdog — 5-second polling layer (v7.9+)
+; ============================================================
+; The listener (PowerShell long-poll loop) MUST run in the user session for
+; clipboard write access. NSSM as SYSTEM doesn't work (Session 0 isolation).
+; Task Scheduler with 1-min repetition is layer-2 safety net. THIS in-AHK
+; watchdog is layer-1: polls every 5s, respawns if missing. Self-heal in <10s.
+;
+; Architecture:
+;   Layer 1 (this) :  AHK SetTimer 5s    → listener absent → Run()
+;   Layer 2 (Task) :  NtfyListenerWatchdog 1-min repeat → revives if AHK + listener both dead
+;   Layer 3 (logon):  AtLogOn trigger     → boot / login revival
+
+CheckListenerAlive() {
+    try {
+        for proc in ComObjGet("winmgmts:\\.\root\cimv2").ExecQuery("SELECT CommandLine FROM Win32_Process WHERE Name='powershell.exe'") {
+            cmd := ""
+            try cmd := proc.CommandLine
+            if (cmd && (InStr(cmd, "run-ntfy-listener") || InStr(cmd, "ntfy-inbox-listener"))) {
+                return  ; alive
+            }
+        }
+    } catch as e {
+        Log("watchdog: WMI query failed (non-fatal, skipping spawn): " e.Message)
+        return  ; safe fallback — don't blindly spawn
+    }
+    Log("watchdog: listener not running, spawning via Run()")
+    spawnCmd := 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' LISTENER_SCRIPT '"'
+    try Run(spawnCmd, , "Hide")
+    catch as e
+        Log("watchdog: Run failed: " e.Message)
+}
+
+SetTimer(CheckListenerAlive, 5000)
+CheckListenerAlive()  ; immediate check on AHK start, no need to wait 5s
+
+Log("ntfy-injector v7.9 started (4-tier + Tier3b + idle-gate + last_inject_at + listener watchdog 5s)")
+TrayTip("v7.9: listener watchdog", "ntfy-injector v7.9", 17)
 SetTimer(() => TrayTip(), -3000)
