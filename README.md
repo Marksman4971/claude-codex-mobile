@@ -81,7 +81,16 @@ This project does. The trade-off: **Windows only**, requires you to host your ow
 5. Register hooks in your `~/.claude/settings.json` (Claude Code) and `~/.codex/hooks.json` (Codex CLI):
    - See `hooks/README.md` and `codex-hooks/hooks.example.json` for the template
 
-6. Install AutoHotkey v2, then add `hooks/ntfy-injector.ahk` to your Startup folder (or run it manually).
+6. Install AutoHotkey v2, then **register a Scheduled Task to run AHK with highest privileges at logon** (so injection works into elevated/admin terminal windows — UIPI blocks low-IL→high-IL keystrokes):
+   ```powershell
+   $action = New-ScheduledTaskAction -Execute "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe" -Argument '"$env:USERPROFILE\claude-codex-mobile\hooks\ntfy-injector.ahk"'
+   $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+   $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+   Register-ScheduledTask -TaskName "NtfyInjectorElevated" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+   Start-ScheduledTask -TaskName "NtfyInjectorElevated"
+   ```
+   (Legacy: Startup folder .lnk also works for non-elevated targets only.)
 
 7. Start the listener watchdog:
    ```powershell
@@ -112,24 +121,40 @@ This project does. The trade-off: **Windows only**, requires you to host your ow
 
 ## Multi-window usage
 
-**Each terminal window must have a distinct HWND.** For Windows Terminal:
+**For Windows Terminal (cc CLI):**
 
-- ✅ Use **`Ctrl+Shift+N`** (new independent window) — each window has its own HWND, routing works
-- ❌ Do NOT use **`Ctrl+Shift+T`** (new tab) or **`Ctrl+Shift+D`** (split pane) — these share the parent window's HWND, routing will collapse to whichever tab/pane is active
+- ✅ **`Ctrl+Shift+N`** (new independent window) is the cleanest path — each window has its own HWND, slot binding stable
+- ⚠️ **`Ctrl+Shift+T`** (new tab) works too as long as you add the `[slot-N]` prefix to the tab title via `/rename`, so AHK Tier 1 UIA can disambiguate. v7.1+ added a Tier 3 "single-tab WT" fallback that handles the common single-tab case without needing the prefix.
+- ❌ **`Ctrl+Shift+D`** (split pane) is not supported — panes share window focus opaquely.
 
-For Claude Code: every new window auto-claims the next free slot on SessionStart.
+**For Codex Desktop** (and any Electron-based AI GUI that lets multiple chats share one window): the host's slot-claim hook fires every time you switch / create a thread, but the hook sees the OS-level foreground window only. If multiple threads live inside one Electron BrowserWindow, all of them collapse to the same HWND → same slot. The **only reliable way to give each thread its own slot is to give each thread its own physical window**.
 
-For Codex Desktop: SessionStart hook fires unreliably; after opening a new Codex Desktop window, manually run:
-```powershell
-& "$env:USERPROFILE\claude-codex-mobile\codex-hooks\codex-slot-claim-current.ps1"
-```
+In Codex Desktop:
+
+- ❌ `Ctrl+N` (new chat) — opens new chat **inside the current window**. Same HWND, slot binding collapses.
+- ❌ `Ctrl+Shift+N` (new window) — opens an empty new window. Thread you create afterwards may still spawn in the original window depending on which window has focus at creation time.
+- ✅ **"Open the current chat in a new window"** (键盘快捷键 → 在新窗口中打开). Default **unassigned**; bind to e.g. `Ctrl+Shift+W`. Right-click on a thread in the sidebar also works. This is the **only** action that actually moves a thread out of its host window into a new BrowserWindow with a new HWND. After that move, the thread sticks to its own window and slot-claim binds it cleanly.
+
+PASS 5 in `codex-hooks/codex-slot-claim-current.ps1` auto-claims slots for any orphan visible Codex window, so once a thread has its own window the binding happens at next hook fire with no manual step.
+
+**This pattern generalises**: if a future Anthropic / Google / etc. AI Desktop GUI adopts the same "many threads in one Electron window" model, the same fix applies — find an "Open in new window" command and bind a shortcut. If a host doesn't expose that command, only the CLI variant routes cleanly.
+
+## Recent improvements (2026-05-20, v7.x line)
+
+- **5-tier injection routing** (`ntfy-injector.ahk`): exact `[slot-N]` UIA → fuzzy `slot-N` UIA → single-tab WT auto-detect → non-WT Electron host (Codex/ChatGPT/VS Code/Cursor) with UIA composer find + pixel fallback → fail-loud ntfy alert to phone (never HWND-blind injection).
+- **Idle-gate before inject** (v7.7): AHK waits up to 5 s for `A_TimeIdle ≥ 500 ms` before stealing focus, so your active typing in window A doesn't leak into window B mid-keystroke when a phone message arrives.
+- **Focus restore with fail-soft**: WT path restores immediately after SendText; Electron path waits 1.5 s then restores. If restore fails, log + carry on — never block the inject.
+- **UIPI bypass via Scheduled Task**: AHK runs as Highest privileges; injects work into admin/elevated terminal windows that low-IL AHK can't reach.
+- **Topic-stable across window churn** (`ntfy-slot-claim.ps1` PASS 2): close cc, open new cc → SessionStart reclaims the orphan slot, keeping the same topic number, so your phone subscriptions never need to change.
+- **Codex same-window thread switching** (`codex-slot-claim-current.ps1` PASS 3): switching threads inside one Codex window reuses the existing slot instead of fragmenting the slot pool with duplicate HWNDs.
+- **Send-NtfyFile helper**: `Send-NtfyFile -Path foo.png -Title "..."` pushes files to the right phone topic by env-var session-id lookup; auto-picks ntfy tag emoji by file extension.
 
 ## Limitations
 
 - Windows only. Linux/macOS would need a different injection mechanism (xdotool / AppleScript).
 - iOS users: ntfy iOS app needs HTTPS server with valid cert; the low-latency HTTP+IP setup won't push notifications. Set up a HTTPS reverse proxy if you need iOS.
-- Codex Desktop multi-window requires manual slot claim per window (no auto-fire SessionStart).
 - Listener restart-on-crash works, but if the ntfy server itself goes down, you need to restart it.
+- Codex Desktop GUI doesn't realtime-refresh from disk-level session updates — the IPC route (`NTFY_CODEX_APP_SERVER_DISPATCH=1`) routes correctly per thread but the message only appears after you re-open the thread; default AHK route shows in GUI but only inside the visible thread of the bound window. Pick based on whether you value correct-thread-routing or live GUI display.
 
 ## Tooling (optional)
 

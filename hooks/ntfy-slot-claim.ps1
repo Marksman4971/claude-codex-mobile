@@ -89,10 +89,24 @@ if (-not $found) {
 }
 Log "window: pid=$($found.pid) hwnd=$($found.hwnd) name=$($found.name) title='$($found.title)'"
 
-# Load slots registry, check if this HWND already claimed (don't double-bind same window)
+# Helper to check if a HWND still refers to a live window (orphan detection)
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WChk { [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd); }
+"@ -ErrorAction SilentlyContinue
+function Test-LiveHwnd($h) {
+    if (-not $h) { return $false }
+    try { return [WChk]::IsWindow([IntPtr][int64]$h) } catch { return $false }
+}
+
+# Load slots registry
 $reg = Get-Content -Raw -Encoding UTF8 $slotsFile | ConvertFrom-Json
 $claimed = $null
-foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9') {
+$slotOrder = 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9'
+
+# PASS 1: this exact HWND already in some slot → just refresh session_id + title (no rebinding)
+foreach ($name in $slotOrder) {
     $slot = $reg.slots.$name
     if ($slot.hwnd -eq $found.hwnd) {
         Log "HWND $($found.hwnd) already in $name (skip duplicate claim, but reset tab title)"
@@ -101,7 +115,6 @@ foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7'
         $tmp = "$slotsFile.tmp"
         $reg | ConvertTo-Json -Depth 5 | Set-Content -Path $tmp -Encoding UTF8
         Move-Item -Path $tmp -Destination $slotsFile -Force
-        # Re-set tab title (in case it was overwritten)
         $slotTag = "[$name] cc"
         [Console]::Write("$([char]27)]0;$slotTag$([char]7)")
         Write-Host "Tab title re-set to: '$slotTag'" -ForegroundColor Cyan
@@ -109,23 +122,54 @@ foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7'
         exit 0
     }
 }
-foreach ($name in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9') {
+
+# PASS 2: prefer reclaiming an orphan slot (HWND set but window no longer alive) over
+# allocating a fresh slot number. Keeps topic-to-cc binding stable across window churn:
+# user closes cc, phone keeps subscribing slot-N, user opens new cc → it auto-reclaims
+# slot-N → phone messages flow into the new window without changing subscription.
+$reclaim = $null
+$reclaimAge = $null
+foreach ($name in $slotOrder) {
     $slot = $reg.slots.$name
-    if (-not $slot.hwnd) {
-        # Free, claim it
-        $slot.hwnd = $found.hwnd
-        $slot.pid  = $found.pid
-        $slot.session_id = $sessionId
-        $slot.claimed_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-        $slot.label = "$($found.name) PID=$($found.pid)"
-        $claimed = $name
-        break
+    if ($slot.hwnd -and -not (Test-LiveHwnd $slot.hwnd)) {
+        $ts = $null
+        try { $ts = [datetime]::ParseExact($slot.claimed_at, 'yyyy-MM-dd HH:mm:ss', $null) } catch {}
+        if (-not $reclaim -or ($ts -and $reclaimAge -and $ts -lt $reclaimAge)) {
+            $reclaim = $name; $reclaimAge = $ts
+        }
+    }
+}
+if ($reclaim) {
+    $slot = $reg.slots.$reclaim
+    Log "reclaiming orphan slot $reclaim (was $($slot.label), dead hwnd=$($slot.hwnd))"
+    Write-Host "[INFO] reclaiming orphan slot $reclaim (topic '$($slot.topic)' preserved across window churn)" -ForegroundColor Yellow
+    $slot.hwnd = $found.hwnd
+    $slot.pid  = $found.pid
+    $slot.session_id = $sessionId
+    $slot.claimed_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    $slot.label = "$($found.name) PID=$($found.pid)"
+    $claimed = $reclaim
+}
+
+# PASS 3: fall back to first truly-free slot (no hwnd at all)
+if (-not $claimed) {
+    foreach ($name in $slotOrder) {
+        $slot = $reg.slots.$name
+        if (-not $slot.hwnd) {
+            $slot.hwnd = $found.hwnd
+            $slot.pid  = $found.pid
+            $slot.session_id = $sessionId
+            $slot.claimed_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+            $slot.label = "$($found.name) PID=$($found.pid)"
+            $claimed = $name
+            break
+        }
     }
 }
 
 if (-not $claimed) {
-    Log "no free slot (all 7 occupied)"
-    Write-Host "[FAIL] all slots occupied; manually release via ntfy-slot-release.ps1 or edit slots.json" -ForegroundColor Yellow
+    Log "no free or orphan slot (all 9 occupied with live windows)"
+    Write-Host "[FAIL] all 9 slots occupied with live windows; release one via ntfy-slot-release.ps1" -ForegroundColor Yellow
     exit 2
 }
 

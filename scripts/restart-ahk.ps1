@@ -28,11 +28,22 @@ $existing = @(Get-Process AutoHotkey64 -ErrorAction SilentlyContinue)
 if ($existing.Count -gt 0) {
   $existing | ForEach-Object {
     Write-Host "[KILL] AHK PID=$($_.Id) Uptime=$([int]((Get-Date) - $_.StartTime).TotalMinutes)min"
-    Stop-Process -Id $_.Id -Force
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 200
+    if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
+      $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)" -ErrorAction SilentlyContinue
+      if ($proc) { [void](Invoke-CimMethod -InputObject $proc -MethodName Terminate -ErrorAction SilentlyContinue) }
+    }
   }
   Start-Sleep -Milliseconds 500
 } else {
   Write-Host "[INFO] 无现有 AHK 进程"
+}
+
+$remaining = @(Get-Process AutoHotkey64 -ErrorAction SilentlyContinue)
+if ($remaining.Count -gt 0) {
+  Write-Host "[FAIL] 仍有旧 AHK 未退出: $($remaining.Id -join ', ')" -ForegroundColor Red
+  exit 2
 }
 
 # 启动
@@ -41,10 +52,13 @@ Start-Sleep -Milliseconds 800
 
 # 验证
 $new = @(Get-Process AutoHotkey64 -ErrorAction SilentlyContinue)
-if ($new.Count -ge 1) {
+if ($new.Count -eq 1) {
   $n = $new[0]
   Write-Host "[OK] AHK 重启完成 PID=$($n.Id) Responding=$($n.Responding)" -ForegroundColor Green
   exit 0
+} elseif ($new.Count -gt 1) {
+  Write-Host "[FAIL] AHK 启动后存在多个进程: $($new.Id -join ', ')" -ForegroundColor Red
+  exit 3
 } else {
   Write-Host "[FAIL] AHK 启动后进程不存在" -ForegroundColor Red
   exit 1

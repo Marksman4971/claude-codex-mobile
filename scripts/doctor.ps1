@@ -9,13 +9,13 @@
   输出 JSON 格式（机读）
 
 .PARAMETER Section
-  只跑某一类：N1 server / N2 listener / N3 ahk / N4 slot / N5 hook
+  只跑某一类：N1 server / N2 listener / N3 ahk / N4 slot / N5 hook / N6 route
 #>
 [CmdletBinding()]
 param(
   [switch]$Quick,
   [switch]$Json,
-  [ValidateSet('all','N1','N2','N3','N4','N5')]
+  [ValidateSet('all','N1','N2','N3','N4','N5','N6')]
   [string]$Section = 'all'
 )
 
@@ -37,6 +37,7 @@ $InboxLog = "$HooksDir\ntfy-inbox-debug.txt"
 $InjectorLog = "$HooksDir\ntfy-injector.log"
 $SettingsJson = "$env:USERPROFILE\.claude\settings.json"
 $NtfyServer = '${NTFY_SERVER_URL}'
+$CodexDispatch = "$env:USERPROFILE\.codex\hooks\codex-ntfy-dispatch.ps1"
 
 # token 从 ntfy-stop.ps1 抽
 $Token = $null
@@ -148,6 +149,12 @@ if ($Section -in 'all','N3') {
     $a = $ahk[0]
     Add-Check 'N3-1' 'AHK 进程存在' PASS "PID=$($a.Id) Started=$($a.StartTime.ToString('HH:mm:ss'))"
 
+    if ($ahk.Count -gt 1) {
+      Add-Check 'N3-5' 'AHK 唯一性' FAIL "$($ahk.Count) 个 AutoHotkey64 进程: $($ahk.Id -join ', ')" "/gen-ntfy restart 清理为单实例"
+    } else {
+      Add-Check 'N3-5' 'AHK 唯一性' PASS "只有 1 个 AHK injector"
+    }
+
     # N3-2: AHK 响应性
     if (-not $a.Responding) {
       Add-Check 'N3-2' 'AHK 响应' FAIL "Responding=False（假死）" "/gen-ntfy restart（kill + 重启 AHK）"
@@ -227,13 +234,26 @@ if ($Section -in 'all','N4') {
       Add-Check 'N4-2' 'slot HWND 有效' FAIL ($invalidHwnds -join ', ') "ntfy-slot-release.ps1 清后让新 SessionStart 重新 claim"
     }
 
-    # N4-3: HWND 复用
+    # N4-3: HWND 复用。Codex Desktop 天然多 thread 共享一个 Electron HWND。
+    # app-server dispatcher 已降级为 opt-in，因为它会跑后台 turn，不会进入当前窗口；
+    # 所以 Codex Desktop 共享 HWND 只能算 best-effort，不再给假 PASS。
     $shared = $hwndUsage.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
-    if ($shared.Count -eq 0) {
+    $unsafeShared = @()
+    $codexShared = @()
+    foreach ($entry in $shared) {
+      $allCodex = $true
+      foreach ($slotName in $entry.Value) {
+        if ($slots.$slotName.label -notlike 'Codex Desktop*') { $allCodex = $false }
+      }
+      $detail = "HWND=$($entry.Key)→[$($entry.Value -join ',')]"
+      if ($allCodex) { $codexShared += $detail } else { $unsafeShared += $detail }
+    }
+    if ($unsafeShared.Count -eq 0 -and $codexShared.Count -eq 0) {
       Add-Check 'N4-3' 'slot HWND 不复用' PASS "每个 HWND 仅 1 slot"
+    } elseif ($unsafeShared.Count -eq 0) {
+      Add-Check 'N4-3' 'slot HWND 不复用' WARN "Codex Desktop 共享 HWND（$($codexShared -join '; ')）；clipboard/AHK 对当前 Codex 窗口为 best-effort" "保留当前默认链路；Codex 前台注入需另做验证后再启用"
     } else {
-      $detail = ($shared | ForEach-Object { "HWND=$($_.Key)→[$($_.Value -join ',')]" }) -join '; '
-      Add-Check 'N4-3' 'slot HWND 不复用' WARN $detail "保留 1 slot 释放其余 / 用独立 WT 窗口"
+      Add-Check 'N4-3' 'slot HWND 不复用' WARN ($unsafeShared -join '; ') "保留 1 slot 释放其余 / 用独立 WT 窗口"
     }
   }
 }
@@ -264,6 +284,31 @@ if ($Section -in 'all','N5') {
     if (-not $hasInjector) { $missing += 'ntfy-injector.lnk' }
     if (-not $hasWatchdog) { $missing += 'ntfy-listener-watchdog.lnk' }
     Add-Check 'N5-2' 'Startup 快捷方式齐' WARN "缺: $($missing -join ', ')" "/gen-ntfy setup startup 重建"
+  }
+}
+
+# ============ §6 Route hardening ============
+if ($Section -in 'all','N6') {
+  $listener = Get-Content "$HooksDir\ntfy-inbox-listener.ps1" -Raw -ErrorAction SilentlyContinue
+  $dispatchOk = Test-Path -LiteralPath $CodexDispatch
+  $dispatchText = ''
+  if ($dispatchOk) { $dispatchText = Get-Content -LiteralPath $CodexDispatch -Raw -ErrorAction SilentlyContinue }
+  $listenerRoutesCodex = $listener -match 'Queue-CodexInbound' -and $listener -match 'codex-ntfy-dispatch'
+  $listenerDispatchOptIn = $listener -match 'NTFY_CODEX_APP_SERVER_DISPATCH' -and $listener -match 'EnableCodexAppServerDispatch'
+  $dispatchUtf8Safe = $dispatchText -match 'ConvertTo-JsonRpcAscii'
+  $dispatchWaitsForTurn = $dispatchText -match 'task_started' -and $dispatchText -match 'task_complete'
+  if ($listenerDispatchOptIn) {
+    Add-Check 'N6-5' 'Codex 入站协议路由' PASS "app-server route 已降级为 opt-in；默认不截流手机消息"
+  } elseif (-not $dispatchOk) {
+    Add-Check 'N6-5' 'Codex 入站协议路由' WARN "缺少 $CodexDispatch；当前使用 clipboard/AHK 默认链路" "仅在明确需要实验 app-server route 时部署 dispatcher"
+  } elseif (-not $listenerRoutesCodex) {
+    Add-Check 'N6-5' 'Codex 入站协议路由' PASS "listener 未启用 app-server 分流；默认使用 clipboard/AHK"
+  } elseif (-not $dispatchUtf8Safe) {
+    Add-Check 'N6-5' 'Codex 入站协议路由' WARN "dispatcher 未做 JSON-RPC ASCII 转义，中文会破坏 app-server stdin" "app-server route 仍为实验；保留默认 clipboard/AHK"
+  } elseif (-not $dispatchWaitsForTurn) {
+    Add-Check 'N6-5' 'Codex 入站协议路由' WARN "dispatcher 未按 task_started/task_complete 判断当前 turn 是否空闲" "app-server route 仍为实验；保留默认 clipboard/AHK"
+  } else {
+    Add-Check 'N6-5' 'Codex 入站协议路由' WARN "app-server route 可用但不应默认启用；它会产生后台 turn，不会进入当前窗口" "把 listener 改为 NTFY_CODEX_APP_SERVER_DISPATCH opt-in"
   }
 }
 

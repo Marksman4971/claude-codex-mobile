@@ -26,6 +26,9 @@ $Server       = '${NTFY_SERVER_URL}'
 $Token        = '${NTFY_TOKEN}'
 $LogPath      = '$env:USERPROFILE\.claude\hooks\ntfy-inbox-debug.txt'
 $PollInterval = 1   # aggressive polling: worst-case 1s latency, avg ~0.5s
+$CodexDispatchScript = "$env:USERPROFILE\.codex\hooks\codex-ntfy-dispatch.ps1"
+$CodexInboxDir = "$env:USERPROFILE\.codex\hooks\ntfy-inbox"
+$EnableCodexAppServerDispatch = ($env:NTFY_CODEX_APP_SERVER_DISPATCH -eq '1')
 
 # Load Windows.Forms once for Clipboard class
 try {
@@ -100,18 +103,69 @@ function Set-ClipRobust {
     return $false
 }
 
+function Queue-CodexInbound {
+    param([string]$slotId, [string]$messageId, [string]$topic, [string]$text)
+
+    # Disabled by default: app-server turns do run, but they are not surfaced in
+    # the active Codex Desktop window. Keep this path opt-in only until there is
+    # a verified foreground handoff.
+    if (-not $EnableCodexAppServerDispatch) { return $false }
+
+    if (-not $slotId -or -not (Test-Path $SlotsFile)) { return $false }
+    try {
+        $reg = Get-Content -LiteralPath $SlotsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $slot = $reg.slots.$slotId
+        if (-not $slot) { return $false }
+        if ($slot.label -notlike 'Codex Desktop*') { return $false }
+        if (-not $slot.session_id) {
+            Log ('codex dispatch unavailable: missing session_id for ' + $slotId)
+            return $false
+        }
+        if (-not (Test-Path -LiteralPath $CodexDispatchScript)) {
+            Log ('codex dispatch unavailable: missing ' + $CodexDispatchScript)
+            return $false
+        }
+
+        New-Item -ItemType Directory -Path $CodexInboxDir -Force | Out-Null
+        $safeId = ($messageId -replace '[^A-Za-z0-9_.-]', '_')
+        $file = Join-Path $CodexInboxDir ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $slotId + '-' + $safeId + '.json')
+        [PSCustomObject]@{
+            id = $messageId
+            topic = $topic
+            slot = $slotId
+            threadId = [string]$slot.session_id
+            text = $text
+            receivedAt = (Get-Date).ToString('o')
+        } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $file -Encoding UTF8
+
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $CodexDispatchScript,
+            '-MessageFile', $file
+        ) | Out-Null
+        Log ('codex dispatch queued id=' + $messageId + ' slot=' + $slotId + ' thread=' + $slot.session_id)
+        return $true
+    } catch {
+        Log ('codex dispatch queue failed id=' + $messageId + ': ' + $_.ToString())
+        return $false
+    }
+}
+
 Log 'listener started (fast-poll 1s mode)'
 
 # Aggressive 1-second polling: worst-case latency 1s, avg ~0.5s.
 # SSE was attempted but PS 5.1 StreamReader.ReadLine() doesn't flush curl --no-buffer
 # lines reliably on Windows. Fast polling is simpler and meets the latency goal.
 $since = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$SeenIds = @{}
 
 while ($true) {
     try {
         $url = '{0}/{1}/json?poll=1&since={2}' -f $Server, $Topic, $since
         $resp = curl.exe -s -m 10 -H ('Authorization: Bearer ' + $Token) $url 2>$null
         if ($LASTEXITCODE -eq 0 -and $resp) {
+            $maxTime = [int64]$since
             foreach ($line in ($resp -split "`n")) {
                 $line = $line.Trim()
                 if (-not $line) { continue }
@@ -119,9 +173,10 @@ while ($true) {
                 try { $msg = $line | ConvertFrom-Json } catch { continue }
                 if (-not $msg) { continue }
                 if ($msg.event -ne 'message') { continue }
-                if ($msg.time -le $since) { continue }
-                $since = $msg.time
                 $mid   = $msg.id
+                if ($SeenIds.ContainsKey($mid)) { continue }
+                $SeenIds[$mid] = $true
+                if ([int64]$msg.time -gt $maxTime) { $maxTime = [int64]$msg.time }
                 # Defensive: skip anything carrying a title (Claude's auto-pushes)
                 if ($msg.title) {
                     Log ('skip titled id=' + $mid + ' title=' + $msg.title)
@@ -138,6 +193,14 @@ while ($true) {
                 }
                 Log ('user msg id=' + $mid + ' topic=' + $msg.topic + ' slot=' + $slotId + ' len=' + $mlen)
 
+                # Optional experimental Codex app-server route. Default is off
+                # because app-server turns complete in the background and do not
+                # surface in the active Codex Desktop window.
+                if (Queue-CodexInbound -slotId $slotId -messageId $mid -topic $msg.topic -text $text) {
+                    Show-ClipToast ('[Codex queued] ' + $text)
+                    continue
+                }
+
                 # Wrap with NTFY-{slot} marker so AHK injector routes to correct window
                 # Format: ⌬⌬NTFY-{slotId}⌬⌬{message}
                 $bz = [char]0x232C
@@ -150,6 +213,10 @@ while ($true) {
                     Log ('clip FAILED id=' + $mid)
                 }
             }
+            # Keep a one-second overlap so multiple messages sharing the same ntfy
+            # timestamp are not lost. SeenIds handles duplicate cache hits.
+            if ($maxTime -gt [int64]$since) { $since = [Math]::Max(0, $maxTime - 1) }
+            if ($SeenIds.Count -gt 2000) { $SeenIds.Clear() }
         }
     } catch {
         Log ('poll exception: ' + $_.ToString())

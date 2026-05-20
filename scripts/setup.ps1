@@ -230,7 +230,7 @@ function Stage-Codex {
   Load-Config
   if (-not (Test-Path $TargetCodex)) { New-Item -ItemType Directory -Path $TargetCodex -Force | Out-Null }
 
-  foreach ($name in @('ntfy-stop.ps1','codex-slot-claim-current.ps1')) {
+  foreach ($name in @('ntfy-stop.ps1','codex-slot-claim-current.ps1','codex-ntfy-dispatch.ps1')) {
     Deploy-File "$RepoCodexHooks\$name" "$TargetCodex\$name" -Substitute | Out-Null
   }
 
