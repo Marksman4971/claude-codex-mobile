@@ -142,6 +142,42 @@ function Resolve-Topic {
     return $defaultTopic
 }
 
+function Resolve-WindowName {
+    param([string]$SessionId)
+    if (-not $SessionId) { return $null }
+    try {
+        if (-not (Test-Path -LiteralPath $slotsFile)) { return $null }
+        $reg = Get-Content -LiteralPath $slotsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($name in "slot-1","slot-2","slot-3","slot-4","slot-5","slot-6","slot-7","slot-8","slot-9") {
+            $slotProp = $reg.slots.PSObject.Properties[$name]
+            if (-not $slotProp) { continue }
+            $slot = $slotProp.Value
+            if ($slot.session_id -eq $SessionId -and $slot.hwnd) {
+                if (-not ('NtfyStopCx.W32' -as [type])) {
+                    Add-Type -Namespace NtfyStopCx -Name W32 -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);
+'@
+                }
+                $sb = New-Object System.Text.StringBuilder 512
+                [void][NtfyStopCx.W32]::GetWindowText([IntPtr]([int64]$slot.hwnd), $sb, 512)
+                $raw = $sb.ToString()
+                $raw = $raw -replace '^管理员:\s*', ''
+                $raw = $raw -replace '^[⠀-⣿✀-➿☀-⛿\s]+', ''
+                $raw = $raw.Trim()
+                if ($raw -and $raw.Length -gt 0 -and $raw.Length -le 100) {
+                    Log "window title: $raw"
+                    return $raw
+                }
+                return $null
+            }
+        }
+    } catch {
+        Log "window name lookup failed: $($_.Exception.Message)"
+    }
+    return $null
+}
+
 $text = $null
 $reason = ""
 $sessionId = $null
@@ -229,21 +265,24 @@ if ($DryRun) {
     return
 }
 
+$windowName = Resolve-WindowName -SessionId $sessionId
+$notificationTitle = if ($windowName) { "CX · $windowName" } else { 'CX' }
+$titleEncoded = [Uri]::EscapeDataString($notificationTitle)
+
 try {
     $body = [System.Text.Encoding]::UTF8.GetBytes($clean)
     Invoke-RestMethod `
-        -Uri ("$serverBase/$targetTopic") `
+        -Uri ("$serverBase/$targetTopic" + '?title=' + $titleEncoded) `
         -Method Post `
         -Body $body `
         -ContentType "text/plain; charset=utf-8" `
         -Headers @{
-            "Title" = "Codex"
             "Tags" = "robot"
             "Priority" = "max"
             "Authorization" = "Bearer ${NTFY_TOKEN}"
         } `
         -TimeoutSec 10 | Out-Null
-    Log "sent ok to $targetTopic len=$($clean.Length)"
+    Log "sent ok to $targetTopic (title='$notificationTitle') len=$($clean.Length)"
 } catch {
     Log "send failed: $($_.Exception.Message)"
 }

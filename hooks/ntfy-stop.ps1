@@ -95,7 +95,9 @@ if (-not $preview) {
 
 # Look up which slot this session belongs to → push to that slot's topic
 # so 同一个 cc 的入和出都走同一个聊天框
+# Also extract the WT window title (set by /rename) for the phone notification title
 $targetTopic = '${NTFY_LEGACY_TOPIC}'  # default fallback (legacy outbox)
+$windowName = $null
 if ($sessionId) {
     try {
         $slotsFile = "$env:USERPROFILE\.claude\hooks\ntfy-slots.json"
@@ -107,6 +109,26 @@ if ($sessionId) {
                 if ($reg.slots.$n.session_id -eq $sessionId) {
                     $targetTopic = $reg.slots.$n.topic
                     Log "matched session to $n -> $targetTopic"
+                    # Derive window title from HWND for notification title
+                    if ($reg.slots.$n.hwnd) {
+                        if (-not ('NtfyStop.W32' -as [type])) {
+                            Add-Type -Namespace NtfyStop -Name W32 -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int n);
+'@
+                        }
+                        $sb = New-Object System.Text.StringBuilder 512
+                        [void][NtfyStop.W32]::GetWindowText([IntPtr]([int64]$reg.slots.$n.hwnd), $sb, 512)
+                        $raw = $sb.ToString()
+                        # Strip admin prefix + spinner/braille/dingbats/misc symbols
+                        $raw = $raw -replace '^管理员:\s*', ''
+                        $raw = $raw -replace '^[⠀-⣿✀-➿☀-⛿\s]+', ''
+                        $raw = $raw.Trim()
+                        if ($raw -and $raw.Length -gt 0 -and $raw.Length -le 100) {
+                            $windowName = $raw
+                            Log "window title: $windowName"
+                        }
+                    }
                     break
                 }
             }
@@ -115,21 +137,24 @@ if ($sessionId) {
 }
 if ($targetTopic -eq '${NTFY_LEGACY_TOPIC}') { Log "no slot match, using default outbox topic" }
 
+$notificationTitle = if ($windowName) { "CC · $windowName" } else { 'CC' }
+# URL-encode title because HTTP headers don't reliably carry UTF-8 / Chinese chars
+$titleEncoded = [Uri]::EscapeDataString($notificationTitle)
+
 try {
     $body = [System.Text.Encoding]::UTF8.GetBytes($preview)
     Invoke-RestMethod `
-        -Uri ('${NTFY_SERVER_URL}/' + $targetTopic) `
+        -Uri ('${NTFY_SERVER_URL}/' + $targetTopic + '?title=' + $titleEncoded) `
         -Method Post `
         -Body $body `
         -ContentType 'text/plain; charset=utf-8' `
         -Headers @{
-            'Title' = 'Claude Code'
             'Tags'  = 'robot'
             'Priority' = 'max'
             'Authorization' = 'Bearer ${NTFY_TOKEN}'
         } `
         -TimeoutSec 10 | Out-Null
-    Log "sent ok to $targetTopic"
+    Log "sent ok to $targetTopic (title='$notificationTitle')"
 } catch {
     Log "send failed: $_"
 }
