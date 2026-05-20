@@ -158,7 +158,9 @@ Detailed docs:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL v3 — see [LICENSE](LICENSE).
+
+> **Why GPL (not MIT)?** This is personal infrastructure I open-sourced so others can use and improve it. The copyleft requirement (anyone who forks/redistributes must release under GPL too) is intentional: I don't want this repackaged into a closed-source commercial product. If you fix a bug or add a feature, GPL ensures the improvement flows back to the community.
 
 ## Acknowledgements
 
