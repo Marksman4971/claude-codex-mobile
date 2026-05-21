@@ -1,9 +1,33 @@
 ﻿$ErrorActionPreference = 'SilentlyContinue'
 
 $logPath = "$env:USERPROFILE\.claude\hooks\ntfy-stop.log"
+$errLogPath = "$env:USERPROFILE\.claude\hooks\ntfy-errors.log"
+$logMaxBytes = 5MB
+
+# v8.0: rotate log if > 5MB (called once per Stop hook invocation, cheap)
+function Rotate-IfLarge($path) {
+    if (Test-Path $path) {
+        try {
+            $size = (Get-Item $path -ErrorAction SilentlyContinue).Length
+            if ($size -gt $logMaxBytes) {
+                Move-Item -Path $path -Destination "$path.1" -Force
+            }
+        } catch {}
+    }
+}
+Rotate-IfLarge $logPath
+Rotate-IfLarge $errLogPath
+
 function Log($msg) {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Add-Content -Path $logPath -Value "[$ts] $msg" -Encoding UTF8
+}
+
+# v8.0: ErrLog tees errors/warnings to centralized ntfy-errors.log for one-glance history
+function ErrLog($msg, $severity = 'ERROR') {
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -Path $logPath -Value "[$ts] $msg" -Encoding UTF8
+    Add-Content -Path $errLogPath -Value "[$ts] [ntfy-stop] [$severity] $msg" -Encoding UTF8
 }
 
 $preview = $null
@@ -151,20 +175,67 @@ $notificationTitle = if ($windowName) { "CC · $windowName" } else { 'CC' }
 # URL-encode title because HTTP headers don't reliably carry UTF-8 / Chinese chars
 $titleEncoded = [Uri]::EscapeDataString($notificationTitle)
 
-try {
-    $body = [System.Text.Encoding]::UTF8.GetBytes($preview)
-    Invoke-RestMethod `
-        -Uri ('${NTFY_SERVER_URL}/' + $targetTopic + '?title=' + $titleEncoded) `
-        -Method Post `
-        -Body $body `
-        -ContentType 'text/plain; charset=utf-8' `
-        -Headers @{
-            'Tags'  = 'robot'
-            'Priority' = 'max'
-            'Authorization' = 'Bearer ${NTFY_TOKEN}'
-        } `
-        -TimeoutSec 10 | Out-Null
-    Log "sent ok to $targetTopic (title='$notificationTitle')"
-} catch {
-    Log "send failed: $_"
+$body = [System.Text.Encoding]::UTF8.GetBytes($preview)
+$maxAttempts = 3
+$attempt = 0
+$sent = $false
+while (-not $sent -and $attempt -lt $maxAttempts) {
+    $attempt++
+    try {
+        Invoke-RestMethod `
+            -Uri ('${NTFY_SERVER_URL}/' + $targetTopic + '?title=' + $titleEncoded) `
+            -Method Post `
+            -Body $body `
+            -ContentType 'text/plain; charset=utf-8' `
+            -Headers @{
+                'Tags'  = 'robot'
+                'Priority' = 'max'
+                'Authorization' = 'Bearer ${NTFY_TOKEN}'
+            } `
+            -TimeoutSec 10 | Out-Null
+        Log "sent ok to $targetTopic (title='$notificationTitle') attempt=$attempt"
+        $sent = $true
+
+        # v8.1 (2026-05-21): write last_push sidecar so listener can detect stale-notification-reply.
+        # When user replies to an old notification on phone but slot has been reclaimed since,
+        # listener compares last_push[slot].session_id vs current slot.session_id; mismatch → reject + warn.
+        if ($sessionId -and $targetTopic -match '${NTFY_TOPIC_PREFIX}-(\d+)$') {
+            $slotKey = 'slot-' + $Matches[1]
+            $lastPushFile = "$env:USERPROFILE\.claude\hooks\ntfy-last-push.json"
+            try {
+                $reg = [ordered]@{}
+                if (Test-Path $lastPushFile) {
+                    $bz = [System.IO.File]::ReadAllBytes($lastPushFile)
+                    if ($bz.Length -ge 3 -and $bz[0] -eq 0xEF) { $bz = $bz[3..($bz.Length-1)] }
+                    $txt = [System.Text.Encoding]::UTF8.GetString($bz)
+                    if ($txt) {
+                        $existing = $txt | ConvertFrom-Json
+                        foreach ($p in $existing.PSObject.Properties) { $reg[$p.Name] = $p.Value }
+                    }
+                }
+                $reg[$slotKey] = [PSCustomObject]@{
+                    session_id = $sessionId
+                    pushed_at  = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+                    title      = $notificationTitle
+                }
+                ($reg | ConvertTo-Json -Depth 4) | Out-File -FilePath $lastPushFile -Encoding UTF8 -Force
+                Log "last_push updated: $slotKey -> sid=$($sessionId.Substring(0,[Math]::Min(8,$sessionId.Length)))"
+            } catch {
+                Log "last_push update failed (non-fatal): $_"
+            }
+        }
+    } catch {
+        $errMsg = $_.Exception.Message
+        $statusCode = $null
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+        # Retry only on transient errors: 429 (rate limit) / 5xx (gateway/server)
+        $retryable = ($statusCode -eq 429) -or ($statusCode -ge 500 -and $statusCode -lt 600) -or ($null -eq $statusCode)
+        if ($attempt -lt $maxAttempts -and $retryable) {
+            ErrLog "send attempt=$attempt failed (status=$statusCode): $errMsg — retrying in 1.5s" 'WARN'
+            Start-Sleep -Milliseconds 1500
+        } else {
+            ErrLog "send failed permanently after $attempt attempts (status=$statusCode): $errMsg" 'ERROR'
+            break
+        }
+    }
 }

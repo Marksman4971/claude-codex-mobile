@@ -19,6 +19,7 @@ $OutputEncoding           = [System.Text.Encoding]::UTF8
 # When a message arrives on slot-N, listener wraps clipboard with marker carrying slot id,
 # so AHK injector can route to the correct cc window.
 $SlotsFile    = "$env:USERPROFILE\.claude\hooks\ntfy-slots.json"
+$LastPushFile = "$env:USERPROFILE\.claude\hooks\ntfy-last-push.json"
 $Topic        = '${NTFY_LEGACY_TOPIC},${NTFY_TOPIC_PREFIX}-1,${NTFY_TOPIC_PREFIX}-2,${NTFY_TOPIC_PREFIX}-3,${NTFY_TOPIC_PREFIX}-4,${NTFY_TOPIC_PREFIX}-5,${NTFY_TOPIC_PREFIX}-6,${NTFY_TOPIC_PREFIX}-7,${NTFY_TOPIC_PREFIX}-8,${NTFY_TOPIC_PREFIX}-9,${NTFY_TOPIC_PREFIX}-10,${NTFY_TOPIC_PREFIX}-11,${NTFY_TOPIC_PREFIX}-12,${NTFY_TOPIC_PREFIX}-13,${NTFY_TOPIC_PREFIX}-14,${NTFY_TOPIC_PREFIX}-15,${NTFY_TOPIC_PREFIX}-16,${NTFY_TOPIC_PREFIX}-17,${NTFY_TOPIC_PREFIX}-18,${NTFY_TOPIC_PREFIX}-19,${NTFY_TOPIC_PREFIX}-20'
 $OutboxTopic  = '${NTFY_LEGACY_TOPIC}'   # legacy / Claude completion pushes / default ingest
 $DefaultSlot  = 'slot-1'  # messages on $OutboxTopic (no slot info) route to this default slot
@@ -58,6 +59,62 @@ function Push-Outbox {
         Invoke-RestMethod -Uri ($Server + '/' + $OutboxTopic) -Method Post -Body $bytes -ContentType 'text/plain; charset=utf-8' -Headers $hdr -TimeoutSec 5 | Out-Null
     } catch {
         Log ('outbox push fail: ' + $_.ToString())
+    }
+}
+
+# v8.1 (2026-05-21): push back to ORIGINAL topic to alert user that the slot was reclaimed.
+# Title is URL-encoded into the URI (not a header) because HTTP headers can't carry UTF-8 / control chars.
+function Push-StaleReplyWarning {
+    param([string]$topic, [string]$origSid, [string]$currentSid, [string]$replyText)
+    try {
+        $preview = if ($replyText.Length -gt 80) { $replyText.Substring(0, 80) + '...' } else { $replyText }
+        $shortOrig = if ($origSid) { $origSid.Substring(0, [Math]::Min(8, $origSid.Length)) } else { 'none' }
+        $shortNew  = if ($currentSid) { $currentSid.Substring(0, [Math]::Min(8, $currentSid.Length)) } else { 'none' }
+        $bodyTxt = "目标窗口已换主：原发送窗口 sid=$shortOrig 已不存在，当前 slot 归属新会话 sid=$shortNew。这条回复未注入，请改发到新窗口。`n`n被拦截的回复：`n$preview"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($bodyTxt)
+        $title = 'Stale notification - 回复未注入'
+        $titleEncoded = [Uri]::EscapeDataString($title)
+        $hdr = @{
+            'Tags'          = 'warning'
+            'Priority'      = 'high'
+            'Authorization' = 'Bearer ' + $Token
+        }
+        Invoke-RestMethod -Uri ($Server + '/' + $topic + '?title=' + $titleEncoded) -Method Post -Body $bytes -ContentType 'text/plain; charset=utf-8' -Headers $hdr -TimeoutSec 5 | Out-Null
+        Log ('stale-reply warning pushed to ' + $topic + ' (orig sid=' + $shortOrig + ' vs current=' + $shortNew + ')')
+    } catch {
+        Log ('stale-reply warning push fail: ' + $_.ToString())
+    }
+}
+
+function Get-LastPushSession {
+    param([string]$slotId)
+    if (-not (Test-Path $LastPushFile)) { return $null }
+    try {
+        $bz = [System.IO.File]::ReadAllBytes($LastPushFile)
+        if ($bz.Length -ge 3 -and $bz[0] -eq 0xEF) { $bz = $bz[3..($bz.Length-1)] }
+        $txt = [System.Text.Encoding]::UTF8.GetString($bz)
+        if (-not $txt) { return $null }
+        $reg = $txt | ConvertFrom-Json
+        return $reg.$slotId.session_id
+    } catch {
+        Log ('last_push read fail (non-fatal): ' + $_.ToString())
+        return $null
+    }
+}
+
+function Get-CurrentSlotSession {
+    param([string]$slotId)
+    if (-not (Test-Path $SlotsFile)) { return $null }
+    try {
+        $bz = [System.IO.File]::ReadAllBytes($SlotsFile)
+        if ($bz.Length -ge 3 -and $bz[0] -eq 0xEF) { $bz = $bz[3..($bz.Length-1)] }
+        $txt = [System.Text.Encoding]::UTF8.GetString($bz)
+        if (-not $txt) { return $null }
+        $reg = $txt | ConvertFrom-Json
+        return $reg.slots.$slotId.session_id
+    } catch {
+        Log ('slots read fail (non-fatal): ' + $_.ToString())
+        return $null
     }
 }
 
@@ -192,6 +249,22 @@ while ($true) {
                     $slotId = $DefaultSlot
                 }
                 Log ('user msg id=' + $mid + ' topic=' + $msg.topic + ' slot=' + $slotId + ' len=' + $mlen)
+
+                # v8.1 (2026-05-21): stale-notification gate.
+                # If user replied to an old phone notification but the slot has since been reclaimed
+                # by a different session, the reply would land in the wrong window. Detect this by
+                # comparing last_push[slot].session_id (whoever last pushed Stop notif from this slot)
+                # against slots.json[slot].session_id (whoever owns the slot right now).
+                # Mismatch → reject + push warning back to the topic so user knows.
+                if ($slotId -and $slotId -match '^slot-\d+$') {
+                    $lastPushSid = Get-LastPushSession -slotId $slotId
+                    $currentSid  = Get-CurrentSlotSession -slotId $slotId
+                    if ($lastPushSid -and $currentSid -and $lastPushSid -ne $currentSid) {
+                        Log ('STALE reply: slot=' + $slotId + ' last_push_sid=' + $lastPushSid.Substring(0,8) + ' current_sid=' + $currentSid.Substring(0,8) + ' — rejecting inject')
+                        Push-StaleReplyWarning -topic $msg.topic -origSid $lastPushSid -currentSid $currentSid -replyText $text
+                        continue
+                    }
+                }
 
                 # Optional experimental Codex app-server route. Default is off
                 # because app-server turns complete in the background and do not
