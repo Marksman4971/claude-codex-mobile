@@ -169,7 +169,39 @@ public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilde
         }
     } catch { Log "slot lookup failed: $_" }
 }
-if ($targetTopic -eq '${NTFY_LEGACY_TOPIC}') { Log "no slot match, using default outbox topic" }
+if ($targetTopic -eq '${NTFY_LEGACY_TOPIC}') {
+    Log "no slot match, attempting auto-claim a free slot (v8.4 — instead of fall through outbox)"
+    if ($sessionId) {
+        try {
+            $bytesAc = [System.IO.File]::ReadAllBytes($slotsFile)
+            if ($bytesAc.Length -ge 3 -and $bytesAc[0] -eq 0xEF) { $bytesAc = $bytesAc[3..($bytesAc.Length-1)] }
+            $regAc = [System.Text.Encoding]::UTF8.GetString($bytesAc) | ConvertFrom-Json
+            $claimed = $null
+            foreach ($n in 'slot-1','slot-2','slot-3','slot-4','slot-5','slot-6','slot-7','slot-8','slot-9','slot-10','slot-11','slot-12','slot-13','slot-14','slot-15','slot-16','slot-17','slot-18','slot-19','slot-20') {
+                $s = $regAc.slots.$n
+                if (-not $s.hwnd -and -not $s.session_id) {
+                    $s.session_id = $sessionId
+                    $s.claimed_at = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+                    $s.label = "cc Stop-hook auto-claim (no hwnd — SessionStart didn't fire)"
+                    $claimed = $n
+                    break
+                }
+            }
+            if ($claimed) {
+                $tmpAc = "$slotsFile.tmp"
+                $regAc | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tmpAc -Encoding UTF8
+                Move-Item -LiteralPath $tmpAc -Destination $slotsFile -Force
+                $targetTopic = $regAc.slots.$claimed.topic
+                Log "auto-claimed $claimed -> $targetTopic for session_id=$sessionId"
+            } else {
+                Log "auto-claim failed: no free slot (all 20 occupied) — falling back to outbox"
+            }
+        } catch {
+            Log "auto-claim error: $_ — falling back to outbox"
+        }
+    }
+}
+if ($targetTopic -eq '${NTFY_LEGACY_TOPIC}') { Log "[WARN] still on default outbox topic — phone reply will be misrouted; consider /gen-ntfy fix or open new cc" }
 
 $notificationTitle = if ($windowName) { "CC · $windowName" } else { 'CC' }
 # URL-encode title because HTTP headers don't reliably carry UTF-8 / Chinese chars

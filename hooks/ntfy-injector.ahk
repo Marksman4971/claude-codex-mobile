@@ -206,7 +206,6 @@ TryUIAByNeedle(slotId, text, needle, tier) {
     }
     hit := matches[1]
     Log("UIA " tier ": picked '" hit.name "' in WT hwnd=" hit.wt)
-    prevFg := GetForegroundSnapshot()
     try {
         WinActivate("ahk_id " hit.wt)
         WinWaitActive("ahk_id " hit.wt, , 1)
@@ -216,8 +215,7 @@ TryUIAByNeedle(slotId, text, needle, tier) {
         Sleep(80)
         Send("{Enter}")
         Log("UIA " tier " injected to '" hit.name "': " SubStr(text, 1, 60))
-        ; Restore foreground (fail-soft — does not affect inject success above)
-        RestoreForegroundSafe(prevFg, hit.wt)
+        ; v8.3 (2026-05-21): no focus-restore — injected window stays foreground per user request
         return true
     } catch as e {
         Log("UIA " tier " inject failed: " e.Message)
@@ -253,7 +251,6 @@ TryUIASingleTab(slotId, text) {
         tabName := ""
         try tabName := tab.Name
         Log("Tier3 single-tab: WT hwnd=" hwnd " has 1 tab '" tabName "' - safe to inject")
-        prevFg := GetForegroundSnapshot()
         ; Note: skip tab.Click() because WT puts focus into the terminal pane on WinActivate
         ; when there's only 1 tab. tab.Click() can route focus into the tab bar chrome
         ; instead, causing SendText keystrokes to land nowhere visible. Empirically the v5
@@ -265,8 +262,7 @@ TryUIASingleTab(slotId, text) {
         Sleep(80)
         Send("{Enter}")
         Log("Tier3 single-tab injected to '" tabName "': " SubStr(text, 1, 60))
-        ; Restore foreground (fail-soft — inject already succeeded)
-        RestoreForegroundSafe(prevFg, hwnd)
+        ; v8.3 (2026-05-21): no focus-restore — injected window stays foreground per user request
         return true
     } catch as e {
         Log("Tier3 single-tab error: " e.Message)
@@ -295,7 +291,6 @@ TryGenericHwnd(slotId, text) {
         return false
     }
     Log("Tier3b generic: " procName " hwnd=" hwnd " — best-effort inject")
-    prevFg := GetForegroundSnapshot()
     try {
         WinActivate("ahk_id " hwnd)
         WinWaitActive("ahk_id " hwnd, , 1)
@@ -368,9 +363,7 @@ TryGenericHwnd(slotId, text) {
         Log("Tier3b generic injected to " procName " (" slotId "): " SubStr(text, 1, 60))
         ; Mark slot so the response Stop hook can route back here, not by foreground heuristic
         MarkSlotInjected(slotId)
-        ; Wait for Electron to process keystrokes before restoring focus.
-        Sleep(1500)
-        RestoreForegroundSafe(prevFg, hwnd)
+        ; v8.3 (2026-05-21): no focus-restore — injected window stays foreground per user request
         return true
     } catch as e {
         Log("Tier3b generic inject failed: " e.Message)
@@ -575,6 +568,6 @@ SlotGcReap() {
 SetTimer(SlotGcReap, 60000)
 SlotGcReap()  ; immediate sweep on AHK start (also reaps any stale slot left from yesterday)
 
-Log("ntfy-injector v8.2 started (4-tier + Tier3b + idle-gate + last_inject_at + listener watchdog 60s + 5h self-restart + slot-GC 60s reaper)")
-TrayTip("v8.2: + slot-GC reaper 60s", "ntfy-injector v8.2", 17)
+Log("ntfy-injector v8.3 started (4-tier + Tier3b + idle-gate + last_inject_at + listener watchdog 60s + 5h self-restart + slot-GC 60s reaper + no focus-restore)")
+TrayTip("v8.3: no focus-restore", "ntfy-injector v8.3", 17)
 SetTimer(() => TrayTip(), -3000)

@@ -241,12 +241,21 @@ while ($true) {
                 }
                 $text = $msg.message
                 $mlen = $text.Length
-                # Derive slot id from topic. Legacy outbox topic → DefaultSlot.
+                # Derive slot id from topic. Legacy outbox topic → REFUSE (v8.4, 2026-05-21).
+                # Old behaviour silently routed outbox replies to DefaultSlot=slot-1, but slot-1's
+                # window is often whatever happened to claim it (Codex Desktop, an old cc, etc.) —
+                # this caused phone replies meant for one cc to land in a totally unrelated window.
+                # New behaviour: refuse, push warning back to outbox so user knows their reply
+                # didn't go anywhere. cc Stop hook v8.4 auto-claims a fresh slot so future Stop
+                # notifications carry slot-N topic instead of outbox.
                 $slotId = ''
                 if ($msg.topic -match '${NTFY_TOPIC_PREFIX}-(\d+)') {
                     $slotId = 'slot-' + $Matches[1]
                 } elseif ($msg.topic -eq $OutboxTopic) {
-                    $slotId = $DefaultSlot
+                    $preview2 = if ($mclean.Length -gt 80) { $mclean.Substring(0, 80) + '...' } else { $mclean }
+                    Log ('REFUSE outbox reply (no slot info, would misroute): ' + $preview2)
+                    Push-StaleReplyWarning -topic $OutboxTopic -origSid 'outbox-default' -currentSid 'unknown' -replyText ("无法路由：你回复的通知走的是 outbox 默认 topic（不带 slot 编号）。原 cc 没有绑定 slot，无法确定目标窗口。请订阅 cc 自己的 ${NTFY_TOPIC_PREFIX}-N topic 后再回复。`n`n原回复：`n" + $mclean)
+                    continue  # skip clip + AHK inject
                 }
                 Log ('user msg id=' + $mid + ' topic=' + $msg.topic + ' slot=' + $slotId + ' len=' + $mlen)
 
