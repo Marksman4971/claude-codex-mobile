@@ -20,18 +20,50 @@ SetTitleMatchMode 2
 global TARGET_FILE := A_AppData "\..\..\.claude\hooks\ntfy-target.json"
 global SLOTS_FILE := A_AppData "\..\..\.claude\hooks\ntfy-slots.json"
 global LOG_FILE := A_AppData "\..\..\.claude\hooks\ntfy-injector.log"
+global ERR_LOG_FILE := A_AppData "\..\..\.claude\hooks\ntfy-errors.log"
+global LOG_MAX_BYTES := 5242880  ; 5 MB rotation threshold
 global ALERT_HELPER := A_AppData "\..\..\.claude\hooks\ntfy-alert.ps1"
 global MARK_INJECT_HELPER := A_AppData "\..\..\.claude\hooks\ntfy-mark-inject.ps1"
 global LISTENER_SCRIPT := A_AppData "\..\..\.claude\hooks\run-ntfy-listener.ps1"
+global SLOT_GC_SCRIPT := A_AppData "\..\..\.claude\hooks\ntfy-slot-gc.ps1"
 global Processing := false
 global LastText := ""
 global LastTick := 0
 global DEDUP_MS := 10000
 
+; v8.0: rotate log if > 5MB (called at startup and periodically by timer)
+RotateLogIfLarge(path) {
+    if !FileExist(path)
+        return
+    try {
+        size := FileGetSize(path)
+        if (size > LOG_MAX_BYTES) {
+            if FileExist(path ".1")
+                FileDelete(path ".1")
+            FileMove(path, path ".1", 1)
+        }
+    } catch as e {
+        ; non-fatal
+    }
+}
+
 Log(msg) {
     ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     try FileAppend("[" ts "] " msg "`n", LOG_FILE, "UTF-8")
 }
+
+; v8.0: ErrLog tees errors/warnings to centralized ntfy-errors.log
+ErrLog(msg, severity := "ERROR") {
+    ts := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+    try FileAppend("[" ts "] " msg "`n", LOG_FILE, "UTF-8")
+    try FileAppend("[" ts "] [ntfy-injector] [" severity "] " msg "`n", ERR_LOG_FILE, "UTF-8")
+}
+
+; Rotate at startup
+RotateLogIfLarge(LOG_FILE)
+RotateLogIfLarge(ERR_LOG_FILE)
+; Also rotate hourly (3600000 ms) to catch long-running drift
+SetTimer(() => (RotateLogIfLarge(LOG_FILE), RotateLogIfLarge(ERR_LOG_FILE)), 3600000)
 
 ReadSlotTopic(slotId) {
     if !FileExist(SLOTS_FILE)
@@ -464,41 +496,85 @@ ClipChanged(DataType) {
 }
 
 ; ============================================================
-; Listener watchdog — 5-second polling layer (v7.9+)
+; Listener watchdog — monitor-only mode (v8.1, 2026-05-21)
 ; ============================================================
-; The listener (PowerShell long-poll loop) MUST run in the user session for
-; clipboard write access. NSSM as SYSTEM doesn't work (Session 0 isolation).
-; Task Scheduler with 1-min repetition is layer-2 safety net. THIS in-AHK
-; watchdog is layer-1: polls every 5s, respawns if missing. Self-heal in <10s.
+; v8.0 was active spawn + dedupe-kill. That clashed with run-ntfy-listener.ps1
+; (the Scheduled Task wrapper) which is ITSELF a spawn + dedupe loop. Both
+; layers spawning + killing produced a 5-second race-loop: wrapper spawns child →
+; AHK matches BOTH wrapper and child as "listeners" via overly broad filter →
+; AHK kills both → wrapper detects child exit → respawns child after 5s → cycle.
+;
+; v8.1 fix: AHK is now monitor-only. Sole spawn authority = Scheduled Task wrapper.
+; Filter narrowed to actual listener child only (not wrapper).
 ;
 ; Architecture:
-;   Layer 1 (this) :  AHK SetTimer 5s    → listener absent → Run()
-;   Layer 2 (Task) :  NtfyListenerWatchdog 1-min repeat → revives if AHK + listener both dead
-;   Layer 3 (logon):  AtLogOn trigger     → boot / login revival
+;   Layer 1 (this) :  AHK SetTimer 60s  → just observe, log anomalies, NEVER spawn/kill
+;   Layer 2 (Task) :  NtfyListenerWatchdog runs run-ntfy-listener.ps1 → sole spawn + dedupe authority
+;   Layer 3 (logon):  AtLogOn trigger    → boot / login revival of the wrapper
 
 CheckListenerAlive() {
+    pids := []
     try {
-        for proc in ComObjGet("winmgmts:\\.\root\cimv2").ExecQuery("SELECT CommandLine FROM Win32_Process WHERE Name='powershell.exe'") {
+        for proc in ComObjGet("winmgmts:\\.\root\cimv2").ExecQuery("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='powershell.exe'") {
             cmd := ""
             try cmd := proc.CommandLine
-            if (cmd && (InStr(cmd, "run-ntfy-listener") || InStr(cmd, "ntfy-inbox-listener"))) {
-                return  ; alive
+            ; v8.1: only count actual listener children; exclude wrapper (run-ntfy-listener)
+            ; to avoid the v8.0 race-loop where wrapper+child were both counted as duplicates.
+            if (cmd && InStr(cmd, "ntfy-inbox-listener") && !InStr(cmd, "run-ntfy-listener")) {
+                pids.Push(proc.ProcessId)
             }
         }
     } catch as e {
-        Log("watchdog: WMI query failed (non-fatal, skipping spawn): " e.Message)
-        return  ; safe fallback — don't blindly spawn
+        ErrLog("watchdog: WMI query failed (non-fatal): " e.Message, "WARN")
+        return
     }
-    Log("watchdog: listener not running, spawning via Run()")
-    spawnCmd := 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' LISTENER_SCRIPT '"'
-    try Run(spawnCmd, , "Hide")
-    catch as e
-        Log("watchdog: Run failed: " e.Message)
+
+    ; Monitor-only: log anomalies but do not spawn or kill.
+    ; Scheduled Task wrapper (run-ntfy-listener.ps1) is the sole spawn + dedupe authority.
+    if (pids.Length == 0) {
+        ErrLog("watchdog: 0 listener children — wrapper should respawn within 5s (check NtfyListenerWatchdog Scheduled Task)", "WARN")
+    } else if (pids.Length > 1) {
+        ErrLog("watchdog: " pids.Length " listener children — wrapper kill-stray logic should reconcile next iteration", "WARN")
+    }
+    ; pids.Length == 1: healthy, silent
 }
 
-SetTimer(CheckListenerAlive, 5000)
-CheckListenerAlive()  ; immediate check on AHK start, no need to wait 5s
+; v8.1: monitor-only, 60s cadence is enough (was 5s in v8.0 when AHK was active spawn).
+SetTimer(CheckListenerAlive, 60000)
+CheckListenerAlive()  ; immediate check on AHK start
 
-Log("ntfy-injector v7.9 started (4-tier + Tier3b + idle-gate + last_inject_at + listener watchdog 5s)")
-TrayTip("v7.9: listener watchdog", "ntfy-injector v7.9", 17)
+; v8.0: self-restart every 5h to prevent state drift (idle-gate / HWND tracking degrades after long uptime).
+; Reload() refreshes the running script in place; no Scheduled Task involvement needed.
+SelfRestart() {
+    Log("self-restart: 5h elapsed, reloading AHK script to refresh state")
+    Reload()
+}
+SetTimer(SelfRestart, 18000000)  ; 5h = 5 * 3600 * 1000 ms
+
+; ============================================================
+; Slot-GC reaper — periodic dead-slot cleanup (v8.2, 2026-05-21)
+; ============================================================
+; Problem: dead slots (cc/Codex closed without SessionEnd) stayed in slots.json
+; pointing at invalid HWNDs, causing phone replies to that slot to hit Tier 4
+; fail-loud (or worse, listener default-routed outbox messages to a dead slot-1).
+; Slot-claim PASSes only run on new SessionStart; passive death wasn't reaped.
+;
+; Fix: spawn ntfy-slot-gc.ps1 every 60s. It IsWindow-checks every slot.hwnd and
+; clears stale entries (preserves topic + last_inject_at for audit). Atomic write.
+;
+; Cadence 60s: slot-table reads are cheap, but write contention with slot-claim
+; should be rare → 60s is a healthy compromise (faster than the 1-min Scheduled
+; Task layer, slow enough to avoid file-lock collisions).
+
+SlotGcReap() {
+    cmd := 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' SLOT_GC_SCRIPT '"'
+    try Run(cmd, , "Hide")
+    catch as e
+        ErrLog("slot-gc: Run failed (non-fatal): " e.Message, "WARN")
+}
+SetTimer(SlotGcReap, 60000)
+SlotGcReap()  ; immediate sweep on AHK start (also reaps any stale slot left from yesterday)
+
+Log("ntfy-injector v8.2 started (4-tier + Tier3b + idle-gate + last_inject_at + listener watchdog 60s + 5h self-restart + slot-GC 60s reaper)")
+TrayTip("v8.2: + slot-GC reaper 60s", "ntfy-injector v8.2", 17)
 SetTimer(() => TrayTip(), -3000)
